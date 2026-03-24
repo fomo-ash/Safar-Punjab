@@ -16,7 +16,7 @@ export default function More() {
 
   const menuItems = [
     { label: "Change City", screen: "/changecity", active: true },
-    { label: "Stops and Stations", screen: "/welcome", active: true }, // ❌ Inactive
+    { label: "Stops and Stations", screen: "/welcome", active: true }, 
     { label: "Language", screen: "/language", active: true },
     { label: "Terms and Conditions", screen: "/terms", active: true },
     { label: "My Grievances", screen: "/grievances", active: true },
