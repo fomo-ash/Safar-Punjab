@@ -5,6 +5,7 @@ import pytesseract
 from PIL import Image
 from celery import Celery
 from pymongo import MongoClient
+from pydantic import model_validator
 from pydantic_settings import BaseSettings
 
 # --- Configuration ---
@@ -12,27 +13,24 @@ class Settings(BaseSettings):
     MONGO_URI: str
     DATABASE_NAME: str
 
+    # --- THIS IS THE FIX ---
+    # This tells Pydantic to ignore extra environment variables like SECRET_KEY
     class Config:
         env_file = ".env"
         extra = "ignore"
+
 
 settings = Settings()
 celery_app = Celery("tasks", broker="redis://redis:6379/0", backend="redis://redis:6379/0")
 
 
-# --- SIMPLIFIED AI HELPER FUNCTIONS ---
-
+# --- AI Helper Functions (Simplified) ---
 def compare_faces_local(id_image_path, selfie_image_path):
-    """
-    Uses the default, faster model for face comparison.
-    """
     try:
         id_image = face_recognition.load_image_file(id_image_path)
         selfie_image = face_recognition.load_image_file(selfie_image_path)
-
         id_face_encodings = face_recognition.face_encodings(id_image)
         selfie_face_encodings = face_recognition.face_encodings(selfie_image)
-
         if len(id_face_encodings) == 1 and len(selfie_face_encodings) == 1:
             distance = face_recognition.face_distance([id_face_encodings[0]], selfie_face_encodings[0])
             similarity = (1 - distance[0]) * 100
@@ -42,9 +40,6 @@ def compare_faces_local(id_image_path, selfie_image_path):
     return 0.0
 
 def extract_text_from_image(image_path):
-    """
-    Extracts text directly from the raw image without pre-processing.
-    """
     try:
         return pytesseract.image_to_string(Image.open(image_path))
     except Exception as e:

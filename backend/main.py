@@ -11,11 +11,12 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.security import OAuth2PasswordRequestForm
+# --- NEW: Import CORSMiddleware ---
+from fastapi.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field
 from celery import Celery
 
-# --- IMPORT the central settings and auth tools ---
 from config import settings
 from auth import (ACCESS_TOKEN_EXPIRE_MINUTES, ALGORITHM, create_access_token,
                   get_password_hash, oauth2_scheme, verify_password)
@@ -34,7 +35,23 @@ bus_location_collection = db["bus_locations"]
 route_collection = db["routes"]
 stop_collection = db["stops"]
 
-# ... (The rest of your main.py file from the last working version remains exactly the same) ...
+# --- FastAPI App ---
+app = FastAPI()
+
+# --- NEW: Add CORS Middleware ---
+# This is the bouncer that allows your app to talk to the server.
+origins = ["*"] # Allow all origins for development
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"], # Allow all methods (GET, POST, etc.)
+    allow_headers=["*"], # Allow all headers
+)
+
+
+# --- WebSocket Connection Manager, Pydantic Models, etc. (No changes below this line) ---
 class ConnectionManager:
     def __init__(self):
         self.active_connections: Dict[str, List[WebSocket]] = {}
@@ -58,8 +75,7 @@ class Token(BaseModel): access_token: str; token_type: str
 class DriverCreate(BaseModel): username: str; password: str
 class Stop(BaseModel): stop_id: str = Field(..., description="Unique identifier for the stop"); name: str; latitude: float; longitude: float
 class Route(BaseModel): route_id: str = Field(..., description="Unique identifier for the route, e.g., '10A'"); name: str; stops: List[Stop] = []
-class TripStart(BaseModel):
-    route_id: str
+class TripStart(BaseModel): route_id: str
 
 async def get_current_driver(token: str = Depends(oauth2_scheme)):
     credentials_exception = HTTPException(
@@ -76,7 +92,6 @@ async def get_current_driver(token: str = Depends(oauth2_scheme)):
     if driver is None: raise credentials_exception
     return driver
 
-app = FastAPI()
 app.mount("/uploads", StaticFiles(directory=UPLOAD_DIRECTORY), name="uploads")
 templates = Jinja2Templates(directory="templates")
 @app.on_event("startup")
@@ -84,6 +99,7 @@ async def startup_db_client():
     if not os.path.exists(UPLOAD_DIRECTORY): os.makedirs(UPLOAD_DIRECTORY)
 @app.on_event("shutdown")
 async def shutdown_db_client(): client.close()
+
 
 @app.post("/auth/register", response_model=Driver)
 async def register_driver(driver: DriverCreate):
@@ -134,70 +150,40 @@ async def get_route_by_id(route_id: str):
 
 @app.post("/trips/start")
 async def start_trip(trip_info: TripStart, current_driver: dict = Depends(get_current_driver)):
-    """
-    Allows a logged-in driver to start a trip on a specific route.
-    This creates an 'active_trip' record.
-    """
     driver_id = current_driver["driver_id"]
     route_id = trip_info.route_id
-
-    # 1. Check if the route actually exists
     route = await route_collection.find_one({"route_id": route_id})
     if not route:
         raise HTTPException(status_code=404, detail=f"Route '{route_id}' not found.")
-
-    # 2. Check if another driver is already on this route (optional, but good practice)
     existing_trip = await db["active_trips"].find_one({"route_id": route_id})
     if existing_trip and existing_trip.get("driver_id") != driver_id:
         raise HTTPException(status_code=409, detail=f"Route '{route_id}' is already being driven by another driver.")
-
-    # 3. Create or update the active trip record
-    trip_data = {
-        "route_id": route_id,
-        "driver_id": driver_id,
-        "start_time": datetime.utcnow()
-    }
-    await db["active_trips"].update_one(
-        {"route_id": route_id},
-        {"$set": trip_data},
-        upsert=True
-    )
-
+    trip_data = {"route_id": route_id, "driver_id": driver_id, "start_time": datetime.utcnow()}
+    await db["active_trips"].update_one({"route_id": route_id}, {"$set": trip_data}, upsert=True)
     return {"message": f"Driver {driver_id} successfully started trip on route {route_id}."}
+
 
 @app.post("/location/update")
 async def update_location(location: LocationUpdate, current_driver: dict = Depends(get_current_driver)):
     driver_id = current_driver["driver_id"]
-
-    # 1. Find which route this driver is currently on
     active_trip = await db["active_trips"].find_one({"driver_id": driver_id})
     if not active_trip:
         raise HTTPException(status_code=400, detail="Driver is not on an active trip. Cannot update location.")
-    
     route_id = active_trip["route_id"]
-
-    # 2. Update the bus location snapshot
     db_update_data = {"lat": location.lat, "lon": location.lon, "last_updated": datetime.utcnow()}
     broadcast_data = {"lat": location.lat, "lon": location.lon, "last_updated": db_update_data["last_updated"].isoformat()}
-    
-    # Use the route_id as the primary key for the location
     await bus_location_collection.update_one({"_id": route_id}, {"$set": db_update_data}, upsert=True)
-    
-    # 3. Broadcast the update to anyone watching that ROUTE
     await manager.broadcast(broadcast_data, bus_id=route_id)
-    
     return {"status": "success"}
 
-@app.websocket("/ws/track/{route_id}") # <-- Changed from bus_id to route_id
+@app.websocket("/ws/track/{route_id}")
 async def websocket_endpoint(websocket: WebSocket, route_id: str):
     await manager.connect(websocket, route_id)
     try:
-        # Send the last known location as soon as the user connects
         last_location = await bus_location_collection.find_one({"_id": route_id})
         if last_location:
             last_location["last_updated"] = last_location["last_updated"].isoformat()
             await websocket.send_json(last_location)
-
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:
@@ -229,7 +215,6 @@ async def upload_verification_documents(
     )
     celery_app.send_task("celery_worker.process_verification", args=[driver_id])
     return {"message": f"Documents for driver '{driver_id}' submitted.", "status": "PENDING_REVIEW"}
-
 
 @app.get("/drivers/status/{driver_id}", response_model=Driver)
 async def get_driver_status(driver_id: str):

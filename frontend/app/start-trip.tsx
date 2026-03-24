@@ -1,9 +1,8 @@
 // frontend/app/start-trip.tsx
 import React, { useState, useEffect } from 'react';
-// --- THIS LINE IS FIXED ---
 import { View, Text, StyleSheet, FlatList, TouchableOpacity, Alert, Button } from 'react-native';
 import { router, Stack } from 'expo-router';
-import { useSession } from './hooks/useAuth'; // Assuming useAuth is in frontend/hooks
+import { useSession } from './hooks/useAuth'; 
 
 const API_URL = process.env.EXPO_PUBLIC_API_URL;
 
@@ -21,7 +20,6 @@ export default function StartTripScreen() {
     async function fetchRoutes() {
       if (!session) return;
       try {
-        // NOTE: This fetch needs to be secured with the token in a real app
         const response = await fetch(`${API_URL}/routes`);
         if (response.ok) {
           const data = await response.json();
@@ -50,7 +48,7 @@ export default function StartTripScreen() {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${session}`, // Use the token to prove who we are
+          Authorization: `Bearer ${session}`, 
         },
         body: JSON.stringify({ route_id: routeId }),
       });
